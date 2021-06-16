@@ -22,6 +22,10 @@
  */
 #include "common.h"
 #include <stdlib.h>
+#include <unistd.h>
+#include <errno.h>
+#include <sys/stat.h>
+#include <sys/types.h>
 
 static void dump_fileinfo(LIBMTP_file_t *file)
 {
@@ -47,6 +51,40 @@ static void dump_fileinfo(LIBMTP_file_t *file)
 }
 
 static void
+pushdir(const char *dirname)
+{
+    if(mkdir(dirname, 0755) != 0 && errno != EEXIST) {
+        fprintf(stderr, "couldn't mkdir %s, errno: %i", dirname, errno);
+        exit(1);
+    }
+    if(chdir(dirname) != 0) {
+        fprintf(stderr, "couldn't chdir %s, errno: %i", dirname, errno);
+        exit(1);
+    }
+}
+
+static void
+popdir()
+{
+    if(chdir("..") != 0) {
+        fprintf(stderr, "wow, couldn't chdir(\"..\") errno: %i", errno);
+        exit(1);
+    }
+}
+
+
+static void
+exit_if_too_many_fails()
+{
+    static int fails = 0;
+    fails = fails + 1;
+    fprintf(stderr, "total fails so far: %i", fails);
+    if(fails > 10) {
+        exit(1);
+    }
+}
+
+static void
 dump_files(LIBMTP_mtpdevice_t *device, uint32_t storageid, int leaf)
 {
   LIBMTP_file_t *files;
@@ -64,9 +102,19 @@ dump_files(LIBMTP_mtpdevice_t *device, uint32_t storageid, int leaf)
     while (file != NULL) {
       /* Please don't print these */
       if (file->filetype == LIBMTP_FILETYPE_FOLDER) {
+        printf("ENTER DIRECTORY:%s\n", file->filename);
+        pushdir(file->filename);
 	dump_files(device, storageid, file->item_id);
+        printf("LEAVE DIRECTORY:%s\n", file->filename);
+        popdir(file->filename);
       } else {
 	dump_fileinfo(file);
+        if(LIBMTP_Get_File_To_File(device, file->item_id, file->filename, NULL, NULL) != 0 ) {
+            char wd[1024];
+            getcwd(&wd[0], 1024);
+            fprintf(stderr, "couldn't write %s in dir %s, errno:%i\n", file->filename, wd, errno);
+            exit_if_too_many_fails();
+        }
       }
       tmp = file;
       file = file->next;
