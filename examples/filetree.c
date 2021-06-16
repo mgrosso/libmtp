@@ -113,12 +113,13 @@ int main (int argc, char **argv)
   }
 
   /* Iterate over connected MTP devices */
-  fprintf(stdout, "Attempting to connect device(s)\n");
+  fprintf(stderr, "Attempting to connect device(s)\n");
   for (i = 0; i < numrawdevices; i++) {
     LIBMTP_mtpdevice_t *device;
     LIBMTP_devicestorage_t *storage;
     char *friendlyname;
     int ret;
+    fprintf(stderr, "attempting to open device %d of %d\n", i, numrawdevices);
 
     device = LIBMTP_Open_Raw_Device_Uncached(&rawdevices[i]);
     if (device == NULL) {
