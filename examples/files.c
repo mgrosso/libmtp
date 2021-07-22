@@ -26,6 +26,107 @@
 #include <errno.h>
 #include <sys/stat.h>
 #include <sys/types.h>
+#include <limits.h>
+#include <string.h>
+
+typedef struct path_segment path_segment_t;
+struct path_segment {
+    char *segment;
+    path_segment_t *prev;
+    path_segment_t *next;
+};
+static path_segment_t *path_stack_first = NULL;
+static path_segment_t *path_stack_last = NULL;
+
+static void
+push_segment(const char *name) {
+    path_segment_t *seg = (path_segment_t *)malloc(sizeof(path_segment_t));
+    seg->segment = strdup(name);
+    seg->prev = path_stack_last;
+    seg->next = NULL;
+    path_stack_last = seg;
+    if(path_stack_first == NULL) {
+        path_stack_first = seg;
+    } else {
+        seg->prev->next = seg;
+    }
+}
+
+static void
+pop_segment() {
+    if(path_stack_first == path_stack_last) {
+        path_stack_first = NULL;
+    }
+    path_segment_t *seg_to_free = path_stack_last;
+    path_stack_last = path_stack_last->prev;
+    if(path_stack_last != NULL) {
+        path_stack_last->next = NULL;
+    }
+    free(seg_to_free->segment);
+    free(seg_to_free);
+}
+
+static int
+current_path_len() {
+    int ret = 0;
+    for(path_segment_t *seg=path_stack_first; seg; seg = seg->next) {
+        ++ret;
+    }
+    return ret;
+}
+
+static char *
+current_path() {
+    const size_t max_write = PATH_MAX + 1;
+    char *buf = (char *)malloc(max_write);
+    char *last_char = buf + PATH_MAX;
+    char *b = buf;
+    memset(buf, 0, max_write);
+    fprintf(stdout, "PATHLEN %i\n", current_path_len());
+    for(path_segment_t *seg=path_stack_first; seg; seg = seg->next) {
+        char *s = seg->segment;
+        while(*s && b < last_char) {
+            *b++ = *s++;
+        }
+        *b++ = '/';
+        fprintf(stdout, "BUF %s segment %s\n", buf, seg->segment);
+    }
+    b = b < last_char ? b : last_char;
+    *b = '\0';
+    return buf;
+}
+
+static int
+should_copy(LIBMTP_file_t *file) {
+    char *path = current_path();
+    size_t dir_path_len = strlen(path);
+    size_t full_path_len = dir_path_len + strlen(file->filename) + 1;
+    char *full_path = (char *)malloc(full_path_len);
+    strcpy(full_path, path);
+    strcpy(full_path + dir_path_len, file->filename);
+    struct stat statbuf;
+    int retval = 0;
+    if(-1 == stat(file->filename, &statbuf)) {
+        if(errno == ENOENT) {
+            fprintf(stdout, "STAT(%s)->ENOENT\n", file->filename);
+            retval = 1;
+        } else {
+            fprintf(stdout,
+                    "couldn't stat %s (%s) and errno is not ENOENT: %i\n",
+                    file->filename, full_path, errno);
+            exit(errno);
+        }
+    } else {
+        fprintf(stdout, "compare: %s (%s) : %li ==  %lu\n",
+                file->filename, full_path,
+                statbuf.st_size, file->filesize);
+        retval = statbuf.st_size != file->filesize;
+    }
+    free(path);
+    free(full_path);
+    return retval;
+}
+
 
 static void dump_fileinfo(LIBMTP_file_t *file)
 {
@@ -54,22 +155,24 @@ static void
 pushdir(const char *dirname)
 {
     if(mkdir(dirname, 0755) != 0 && errno != EEXIST) {
-        fprintf(stderr, "couldn't mkdir %s, errno: %i", dirname, errno);
+        fprintf(stdout, "couldn't mkdir %s, errno: %i\n", dirname, errno);
         exit(1);
     }
     if(chdir(dirname) != 0) {
-        fprintf(stderr, "couldn't chdir %s, errno: %i", dirname, errno);
+        fprintf(stdout, "couldn't chdir %s, errno: %i\n", dirname, errno);
         exit(1);
     }
+    push_segment(dirname);
 }
 
 static void
 popdir()
 {
     if(chdir("..") != 0) {
-        fprintf(stderr, "wow, couldn't chdir(\"..\") errno: %i", errno);
+        fprintf(stdout, "wow, couldn't chdir(\"..\") errno: %i\n", errno);
         exit(1);
     }
+    pop_segment();
 }
 
 
@@ -78,7 +181,7 @@ exit_if_too_many_fails()
 {
     static int fails = 0;
     fails = fails + 1;
-    fprintf(stderr, "total fails so far: %i", fails);
+    fprintf(stdout, "total fails so far: %i", fails);
     if(fails > 10) {
         exit(1);
     }
@@ -104,16 +207,26 @@ dump_files(LIBMTP_mtpdevice_t *device, uint32_t storageid, int leaf)
       if (file->filetype == LIBMTP_FILETYPE_FOLDER) {
         printf("ENTER DIRECTORY:%s\n", file->filename);
         pushdir(file->filename);
-	dump_files(device, storageid, file->item_id);
+        char *s = current_path();
+        printf("CURRENT_PATH after entering %s is %s\n", file->filename, s);
+        free(s);
+        dump_files(device, storageid, file->item_id);
         printf("LEAVE DIRECTORY:%s\n", file->filename);
         popdir(file->filename);
+        s = current_path();
+        printf("CURRENT_PATH after leaving %s is %s\n", file->filename, s);
+        free(s);
       } else {
-	dump_fileinfo(file);
-        if(LIBMTP_Get_File_To_File(device, file->item_id, file->filename, NULL, NULL) != 0 ) {
-            char wd[1024];
-            getcwd(&wd[0], 1024);
-            fprintf(stderr, "couldn't write %s in dir %s, errno:%i\n", file->filename, wd, errno);
-            exit_if_too_many_fails();
+        dump_fileinfo(file);
+        int will_copy = should_copy(file);
+        fprintf(stdout, "should_copy(%s):%i\n", file->filename, will_copy);
+        if(will_copy) {
+            if(LIBMTP_Get_File_To_File(device, file->item_id, file->filename, NULL, NULL) != 0 ) {
+                char wd[1024];
+                getcwd(&wd[0], 1024);
+                fprintf(stdout, "couldn't write %s in dir %s, errno:%i\n", file->filename, wd, errno);
+                exit_if_too_many_fails();
+            }
         }
       }
       tmp = file;
@@ -141,16 +254,16 @@ int main(int argc, char **argv)
     fprintf(stdout, "mtp-files: No Devices have been found\n");
     return 0;
   case LIBMTP_ERROR_CONNECTING:
-    fprintf(stderr, "mtp-files: There has been an error connecting. Exit\n");
+    fprintf(stdout, "mtp-files: There has been an error connecting. Exit\n");
     return 1;
   case LIBMTP_ERROR_MEMORY_ALLOCATION:
-    fprintf(stderr, "mtp-files: Memory Allocation Error. Exit\n");
+    fprintf(stdout, "mtp-files: Memory Allocation Error. Exit\n");
     return 1;
 
   /* Unknown general errors - This should never execute */
   case LIBMTP_ERROR_GENERAL:
   default:
-    fprintf(stderr, "mtp-files: Unknown error, please report "
+    fprintf(stdout, "mtp-files: Unknown error, please report "
                     "this to the libmtp developers\n");
     return 1;
 
@@ -169,7 +282,7 @@ int main(int argc, char **argv)
 
     device = LIBMTP_Open_Raw_Device_Uncached(&rawdevices[i]);
     if (device == NULL) {
-      fprintf(stderr, "Unable to open raw device %d\n", i);
+      fprintf(stdout, "Unable to open raw device %d\n", i);
       continue;
     }
 
