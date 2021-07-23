@@ -1,3 +1,13 @@
+WARNING: this is a hack of a fork of libmtp. Basically, I just added about 150 lines of code to examples/file.c so that the mtp-files example would meet my simple back up needs. Namely, it dumps every file from Android that doesn't exist in the target posix directory with the same byte size.
+
+USAGE: "mkdir mtp-backup; cd mtp-backup; mtp-files >mtp-files-backup.log 2>&1"
+
+TODO: This needs to get broken out into it's own utility which depends on libmtp rather than forking it. It should probably have command line options rather than hard code my personal preferences.
+
+
+original libmtp README below:
+
+
 Building and Installing
 -----------------------
 
